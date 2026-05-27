@@ -1,8 +1,9 @@
 package com.nestblr.repositories
 
 import com.nestblr.config.DatabaseFactory.dbQuery
-import com.nestblr.models.dto.ListingSummaryDto
-import com.nestblr.models.dto.SearchFilters
+import com.nestblr.models.dto.*
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import org.jetbrains.exposed.v1.jdbc.transactions.TransactionManager
 import java.sql.Connection
 import java.sql.ResultSet
@@ -11,9 +12,6 @@ class ListingRepository {
 
     /**
      * Geo-search using PostGIS ST_DWithin + ST_Distance.
-     *
-     * Why ST_DWithin and not just ST_Distance < x:
-     * ST_DWithin uses the GIST spatial index. ST_Distance < x cannot.
      * Reference: https://postgis.net/docs/ST_DWithin.html
      */
     suspend fun search(filters: SearchFilters): Pair<List<ListingSummaryDto>, Int> = dbQuery {
@@ -37,17 +35,11 @@ class ListingRepository {
 
         val sql = """
             WITH filtered_listings AS (
-                SELECT DISTINCT l.id,
-                                l.title,
-                                l.locality,
-                                l.address_line,
+                SELECT DISTINCT l.id, l.title, l.locality, l.address_line,
                                 ST_Y(l.location::geometry) AS lat,
                                 ST_X(l.location::geometry) AS lng,
-                                l.gender_preference,
-                                l.pg_type,
-                                l.food_type,
-                                l.avg_rating,
-                                l.review_count,
+                                l.gender_preference, l.pg_type, l.food_type,
+                                l.avg_rating, l.review_count,
                                 ST_Distance(l.location, ST_GeogFromText(?)) AS dist
                 FROM listings l
                 $rentJoin
@@ -86,9 +78,7 @@ class ListingRepository {
             stmt.setInt(4, filters.size)
             stmt.setInt(5, offset)
             stmt.executeQuery().use { rs ->
-                while (rs.next()) {
-                    results.add(rs.toListingSummary())
-                }
+                while (rs.next()) results.add(rs.toListingSummary())
             }
         }
 
@@ -101,6 +91,189 @@ class ListingRepository {
         }
 
         results to total
+    }
+
+    /**
+     * Fetch one listing with all related data.
+     *
+     * Why multiple queries instead of one giant JOIN:
+     * A single JOIN with photos+rooms+amenities+reviews causes row explosion.
+     * 5 photos × 3 rooms × 4 amenities × 5 reviews = 300 duplicated rows per listing,
+     * requiring deduplication in code. Multiple targeted queries are clearer and
+     * usually faster in practice because each query is smaller and uses tight indexes.
+     *
+     * All queries share the same DB connection inside the transaction, so this
+     * is still one logical unit of work.
+     */
+    suspend fun findById(id: String): ListingDetailDto? = dbQuery {
+        val jdbcConn: Connection = TransactionManager.current().connection.connection as Connection
+
+        // 1. Core listing + owner — one JOIN since each listing has exactly one owner
+        val coreSql = """
+            SELECT l.id, l.title, l.description, l.address_line, l.locality, l.city,
+                   l.pincode, ST_Y(l.location::geometry) AS lat, ST_X(l.location::geometry) AS lng,
+                   l.gender_preference, l.pg_type, l.food_type,
+                   l.avg_rating, l.review_count, l.status,
+                   u.id AS owner_id, u.full_name AS owner_name,
+                   u.phone AS owner_phone, u.is_verified AS owner_verified
+            FROM listings l
+            INNER JOIN users u ON u.id = l.owner_id
+            WHERE l.id = ?::uuid AND l.status != 'DELETED'
+        """.trimIndent()
+
+        var detail: ListingDetailDto? = null
+
+        jdbcConn.prepareStatement(coreSql).use { stmt ->
+            stmt.setString(1, id)
+            stmt.executeQuery().use { rs ->
+                if (rs.next()) {
+                    val owner = OwnerDto(
+                        id = rs.getString("owner_id"),
+                        fullName = rs.getString("owner_name"),
+                        phone = rs.getString("owner_phone"),
+                        isVerified = rs.getBoolean("owner_verified")
+                    )
+
+                    // 2. Fetch related collections — each one a small targeted query
+                    val rooms = fetchRooms(jdbcConn, id)
+                    val photos = fetchPhotos(jdbcConn, id)
+                    val amenities = fetchAmenities(jdbcConn, id)
+                    val reviews = fetchRecentReviews(jdbcConn, id, limit = 5)
+
+                    detail = ListingDetailDto(
+                        id = rs.getString("id"),
+                        title = rs.getString("title"),
+                        description = rs.getString("description"),
+                        addressLine = rs.getString("address_line"),
+                        locality = rs.getString("locality"),
+                        city = rs.getString("city"),
+                        pincode = rs.getString("pincode"),
+                        latitude = rs.getDouble("lat"),
+                        longitude = rs.getDouble("lng"),
+                        genderPreference = rs.getString("gender_preference") ?: "COED",
+                        pgType = rs.getString("pg_type") ?: "PG",
+                        foodType = rs.getString("food_type") ?: "BOTH",
+                        avgRating = rs.getDouble("avg_rating"),
+                        reviewCount = rs.getInt("review_count"),
+                        status = rs.getString("status"),
+                        owner = owner,
+                        roomOptions = rooms,
+                        photos = photos,
+                        amenities = amenities,
+                        recentReviews = reviews
+                    )
+                }
+            }
+        }
+
+        detail
+    }
+
+    private fun fetchRooms(conn: Connection, listingId: String): List<RoomOptionDto> {
+        val sql = """
+            SELECT id, sharing_type, monthly_rent, security_deposit,
+                   total_beds, available_beds, notice_period_days
+            FROM room_options
+            WHERE listing_id = ?::uuid
+            ORDER BY monthly_rent ASC
+        """.trimIndent()
+        val out = mutableListOf<RoomOptionDto>()
+        conn.prepareStatement(sql).use { stmt ->
+            stmt.setString(1, listingId)
+            stmt.executeQuery().use { rs ->
+                while (rs.next()) {
+                    out.add(RoomOptionDto(
+                        id = rs.getString("id"),
+                        sharingType = rs.getString("sharing_type") ?: "DOUBLE",
+                        monthlyRent = rs.getInt("monthly_rent"),
+                        securityDeposit = rs.getInt("security_deposit"),
+                        totalBeds = rs.getInt("total_beds"),
+                        availableBeds = rs.getInt("available_beds"),
+                        noticePeriodDays = rs.getInt("notice_period_days")
+                    ))
+                }
+            }
+        }
+        return out
+    }
+
+    private fun fetchPhotos(conn: Connection, listingId: String): List<PhotoDto> {
+        val sql = """
+            SELECT id, url, thumbnail_url, display_order
+            FROM listing_photos
+            WHERE listing_id = ?::uuid
+            ORDER BY display_order ASC
+        """.trimIndent()
+        val out = mutableListOf<PhotoDto>()
+        conn.prepareStatement(sql).use { stmt ->
+            stmt.setString(1, listingId)
+            stmt.executeQuery().use { rs ->
+                while (rs.next()) {
+                    out.add(PhotoDto(
+                        id = rs.getString("id"),
+                        url = rs.getString("url"),
+                        thumbnailUrl = rs.getString("thumbnail_url"),
+                        displayOrder = rs.getInt("display_order")
+                    ))
+                }
+            }
+        }
+        return out
+    }
+
+    private fun fetchAmenities(conn: Connection, listingId: String): List<AmenityDto> {
+        val sql = """
+            SELECT a.id, a.name, a.icon_key
+            FROM listing_amenities la
+            INNER JOIN amenities a ON a.id = la.amenity_id
+            WHERE la.listing_id = ?::uuid
+            ORDER BY a.name ASC
+        """.trimIndent()
+        val out = mutableListOf<AmenityDto>()
+        conn.prepareStatement(sql).use { stmt ->
+            stmt.setString(1, listingId)
+            stmt.executeQuery().use { rs ->
+                while (rs.next()) {
+                    out.add(AmenityDto(
+                        id = rs.getInt("id"),
+                        name = rs.getString("name"),
+                        iconKey = rs.getString("icon_key")
+                    ))
+                }
+            }
+        }
+        return out
+    }
+
+    private fun fetchRecentReviews(conn: Connection, listingId: String, limit: Int): List<ReviewDto> {
+        val sql = """
+            SELECT r.id, u.full_name AS user_name, r.rating, r.comment,
+                   r.stayed_from, r.stayed_until, r.created_at
+            FROM reviews r
+            INNER JOIN users u ON u.id = r.user_id
+            WHERE r.listing_id = ?::uuid AND r.is_flagged = FALSE
+            ORDER BY r.created_at DESC
+            LIMIT ?
+        """.trimIndent()
+        val out = mutableListOf<ReviewDto>()
+        conn.prepareStatement(sql).use { stmt ->
+            stmt.setString(1, listingId)
+            stmt.setInt(2, limit)
+            stmt.executeQuery().use { rs ->
+                while (rs.next()) {
+                    out.add(ReviewDto(
+                        id = rs.getString("id"),
+                        userName = rs.getString("user_name"),
+                        rating = rs.getInt("rating"),
+                        comment = rs.getString("comment"),
+                        stayedFrom = rs.getString("stayed_from"),
+                        stayedUntil = rs.getString("stayed_until"),
+                        createdAt = rs.getString("created_at")
+                    ))
+                }
+            }
+        }
+        return out
     }
 
     private fun String.sanitize() = this.uppercase().replace(Regex("[^A-Z_]"), "")
