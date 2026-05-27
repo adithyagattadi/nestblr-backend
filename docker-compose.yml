@@ -1,0 +1,28 @@
+version: '3.8'
+
+# Local dev database for NestBLR
+# Start: docker compose up -d
+# Stop:  docker compose down
+# Reset: docker compose down -v
+
+services:
+  postgres:
+    image: postgis/postgis:16-3.4
+    container_name: nestblr-postgres
+    environment:
+      POSTGRES_USER: nestblr
+      POSTGRES_PASSWORD: nestblr_dev_password
+      POSTGRES_DB: nestblr
+    ports:
+      - "5432:5432"
+    volumes:
+      - nestblr_pgdata:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nestblr"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  nestblr_pgdata:
