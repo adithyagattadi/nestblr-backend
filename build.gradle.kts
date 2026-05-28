@@ -56,6 +56,12 @@ dependencies {
     // Testing
     testImplementation("io.ktor:ktor-server-test-host:$ktor_version")
     testImplementation("org.jetbrains.kotlin:kotlin-test-junit:$kotlin_version")
+
+    // Firebase Admin SDK — token verification
+    implementation("com.google.firebase:firebase-admin:9.9.0")
+
+    // Ktor auth plugin
+    implementation("io.ktor:ktor-server-auth:$ktor_version")
 }
 
 kotlin {

@@ -1,6 +1,8 @@
 package com.nestblr
 
 import com.nestblr.config.DatabaseFactory
+import com.nestblr.config.FirebaseConfig
+import com.nestblr.plugins.configureAuthentication
 import com.nestblr.plugins.configureRouting
 import com.nestblr.plugins.configureSerialization
 import com.nestblr.plugins.configureStatusPages
@@ -12,8 +14,10 @@ fun main(args: Array<String>) {
 }
 
 fun Application.module() {
+    FirebaseConfig.init()           // must come before authentication
     DatabaseFactory.init(environment.config)
     configureSerialization()
     configureStatusPages()
+    configureAuthentication()
     configureRouting()
 }

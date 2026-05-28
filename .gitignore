@@ -6,3 +6,4 @@ build/
 local.properties
 *.log
 out/
+firebase-service-account.json
