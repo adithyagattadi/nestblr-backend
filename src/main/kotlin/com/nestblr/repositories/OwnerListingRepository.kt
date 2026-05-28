@@ -24,10 +24,10 @@ class OwnerListingRepository {
         val insertListing = """
             INSERT INTO listings
                 (owner_id, title, description, address_line, locality, city, pincode,
-                 location, gender_preference, pg_type, food_type, status)
+                 contact_phone, location, gender_preference, pg_type, food_type, status)
             VALUES
                 (?::uuid, ?, ?, ?, ?, ?, ?,
-                 ST_SetSRID(ST_MakePoint(?, ?), 4326)::geography, ?, ?, ?, 'ACTIVE')
+                 ?, ST_SetSRID(ST_MakePoint(?, ?), 4326)::geography, ?, ?, ?, 'ACTIVE')
             RETURNING id
         """.trimIndent()
 
@@ -39,11 +39,12 @@ class OwnerListingRepository {
             stmt.setString(5, req.locality)
             stmt.setString(6, req.city)
             stmt.setString(7, req.pincode)
-            stmt.setDouble(8, req.longitude)   // ST_MakePoint takes (lng, lat)
-            stmt.setDouble(9, req.latitude)
-            stmt.setString(10, req.genderPreference)
-            stmt.setString(11, req.pgType)
-            stmt.setString(12, req.foodType)
+            stmt.setString(8, req.contactPhone)
+            stmt.setDouble(9, req.longitude)   // ST_MakePoint takes (lng, lat)
+            stmt.setDouble(10, req.latitude)
+            stmt.setString(11, req.genderPreference)
+            stmt.setString(12, req.pgType)
+            stmt.setString(13, req.foodType)
             stmt.executeQuery().use { rs ->
                 rs.next()
                 listingId = rs.getString("id")
@@ -110,7 +111,7 @@ class OwnerListingRepository {
         val sql = """
             UPDATE listings SET
                 title = ?, description = ?, address_line = ?, locality = ?,
-                city = ?, pincode = ?,
+                city = ?, pincode = ?, contact_phone = ?,
                 location = ST_SetSRID(ST_MakePoint(?, ?), 4326)::geography,
                 gender_preference = ?, pg_type = ?, food_type = ?,
                 updated_at = NOW()
@@ -123,12 +124,13 @@ class OwnerListingRepository {
             stmt.setString(4, req.locality)
             stmt.setString(5, req.city)
             stmt.setString(6, req.pincode)
-            stmt.setDouble(7, req.longitude)
-            stmt.setDouble(8, req.latitude)
-            stmt.setString(9, req.genderPreference)
-            stmt.setString(10, req.pgType)
-            stmt.setString(11, req.foodType)
-            stmt.setString(12, listingId)
+            stmt.setString(7, req.contactPhone)
+            stmt.setDouble(8, req.longitude)
+            stmt.setDouble(9, req.latitude)
+            stmt.setString(10, req.genderPreference)
+            stmt.setString(11, req.pgType)
+            stmt.setString(12, req.foodType)
+            stmt.setString(13, listingId)
             stmt.executeUpdate()
         }
     }

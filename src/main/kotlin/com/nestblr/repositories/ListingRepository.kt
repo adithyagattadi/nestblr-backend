@@ -115,7 +115,7 @@ class ListingRepository {
                    l.gender_preference, l.pg_type, l.food_type,
                    l.avg_rating, l.review_count, l.status,
                    u.id AS owner_id, u.full_name AS owner_name,
-                   u.phone AS owner_phone, u.is_verified AS owner_verified
+                   COALESCE(l.contact_phone, u.phone) AS owner_phone, u.is_verified AS owner_verified
             FROM listings l
             INNER JOIN users u ON u.id = l.owner_id
             WHERE l.id = ?::uuid AND l.status != 'DELETED'

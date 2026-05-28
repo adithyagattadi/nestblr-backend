@@ -16,6 +16,7 @@ data class CreateListingRequest(
     val locality: String,
     val city: String = "Bengaluru",
     val pincode: String? = null,
+    val contactPhone: String? = null,
     val latitude: Double,
     val longitude: Double,
     val genderPreference: String,   // MALE | FEMALE | COED

@@ -31,6 +31,7 @@ CREATE TABLE listings (
     locality TEXT NOT NULL,
     city TEXT NOT NULL DEFAULT 'Bengaluru',
     pincode TEXT,
+    contact_phone TEXT,
     location GEOGRAPHY(POINT, 4326) NOT NULL,
     gender_preference TEXT CHECK (gender_preference IN ('MALE', 'FEMALE', 'COED')),
     pg_type TEXT CHECK (pg_type IN ('PG', 'HOSTEL', 'COLIVING')),
