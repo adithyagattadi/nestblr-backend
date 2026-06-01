@@ -144,6 +144,72 @@ class OwnerListingRepository {
         }
     }
 
+    // ---------- Photo management ----------
+
+    /** Number of photos currently attached to a listing. */
+    suspend fun getPhotoCount(listingId: String): Int = dbQuery {
+        val conn: Connection = TransactionManager.current().connection.connection as Connection
+        conn.prepareStatement(
+            "SELECT COUNT(*) AS cnt FROM listing_photos WHERE listing_id = ?::uuid"
+        ).use { stmt ->
+            stmt.setString(1, listingId)
+            stmt.executeQuery().use { rs ->
+                rs.next()
+                rs.getInt("cnt")
+            }
+        }
+    }
+
+    /** Inserts a photo row and returns its new id. */
+    suspend fun insertPhoto(
+        listingId: String,
+        url: String,
+        thumbnailUrl: String,
+        displayOrder: Int
+    ): String = dbQuery {
+        val conn: Connection = TransactionManager.current().connection.connection as Connection
+        val sql = """
+            INSERT INTO listing_photos (listing_id, url, thumbnail_url, display_order)
+            VALUES (?::uuid, ?, ?, ?)
+            RETURNING id
+        """.trimIndent()
+        conn.prepareStatement(sql).use { stmt ->
+            stmt.setString(1, listingId)
+            stmt.setString(2, url)
+            stmt.setString(3, thumbnailUrl)
+            stmt.setInt(4, displayOrder)
+            stmt.executeQuery().use { rs ->
+                rs.next()
+                rs.getString("id")
+            }
+        }
+    }
+
+    /**
+     * Returns the photo's url iff it belongs to [listingId].
+     * Used as a combined existence + ownership check before deletion.
+     */
+    suspend fun getPhotoUrlForListing(photoId: String, listingId: String): String? = dbQuery {
+        val conn: Connection = TransactionManager.current().connection.connection as Connection
+        conn.prepareStatement(
+            "SELECT url FROM listing_photos WHERE id = ?::uuid AND listing_id = ?::uuid"
+        ).use { stmt ->
+            stmt.setString(1, photoId)
+            stmt.setString(2, listingId)
+            stmt.executeQuery().use { rs ->
+                if (rs.next()) rs.getString("url") else null
+            }
+        }
+    }
+
+    suspend fun deletePhoto(photoId: String) = dbQuery {
+        val conn: Connection = TransactionManager.current().connection.connection as Connection
+        conn.prepareStatement("DELETE FROM listing_photos WHERE id = ?::uuid").use { stmt ->
+            stmt.setString(1, photoId)
+            stmt.executeUpdate()
+        }
+    }
+
     /** Lists all non-deleted listings owned by [ownerId]. */
     suspend fun listByOwner(ownerId: String): List<OwnerListingDto> = dbQuery {
         val conn: Connection = TransactionManager.current().connection.connection as Connection

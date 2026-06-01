@@ -2,17 +2,22 @@ package com.nestblr.routes
 
 import com.nestblr.models.dto.ApiResponse
 import com.nestblr.models.dto.CreateListingRequest
+import com.nestblr.models.dto.PhotoDto
 import com.nestblr.plugins.BadRequestException
 import com.nestblr.plugins.FirebasePrincipal
 import com.nestblr.plugins.NotFoundException
 import com.nestblr.repositories.OwnerListingRepository
 import com.nestblr.repositories.UserRepository
 import io.ktor.http.*
+import io.ktor.http.content.*
 import io.ktor.server.application.*
 import io.ktor.server.auth.*
 import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
+import io.ktor.utils.io.jvm.javaio.toInputStream
+import java.io.File
+import java.util.UUID
 
 /**
  * Owner-only listing management.
@@ -78,8 +83,141 @@ fun Route.ownerRoutes(
                 ownerRepo.softDeleteListing(listingId)
                 call.respond(HttpStatusCode.OK, ApiResponse(data = mapOf("deleted" to listingId)))
             }
+
+            // POST /api/v1/owner/listings/{listingId}/photos — upload one photo
+            post("/listings/{listingId}/photos") {
+                val (userId, _) = requireOwner(call, userRepo)
+                val listingId = call.parameters["listingId"]
+                    ?: throw BadRequestException("Missing listing id")
+
+                val ownerId = ownerRepo.getOwnerId(listingId)
+                    ?: throw NotFoundException("Listing not found")
+                if (ownerId != userId) throw ForbiddenException("You don't own this listing")
+
+                val existingCount = ownerRepo.getPhotoCount(listingId)
+                if (existingCount >= MAX_PHOTOS_PER_LISTING) {
+                    throw BadRequestException(
+                        "Listing already has the maximum $MAX_PHOTOS_PER_LISTING photos"
+                    )
+                }
+
+                val saved = receiveImageToDisk(call)
+                val url = "/uploads/${saved.name}"
+                val photoId = ownerRepo.insertPhoto(
+                    listingId = listingId,
+                    url = url,
+                    thumbnailUrl = url,
+                    displayOrder = existingCount
+                )
+                call.respond(
+                    HttpStatusCode.Created,
+                    ApiResponse(
+                        data = PhotoDto(
+                            id = photoId,
+                            url = url,
+                            thumbnailUrl = url,
+                            displayOrder = existingCount
+                        )
+                    )
+                )
+            }
+
+            // DELETE /api/v1/owner/listings/{listingId}/photos/{photoId}
+            delete("/listings/{listingId}/photos/{photoId}") {
+                val (userId, _) = requireOwner(call, userRepo)
+                val listingId = call.parameters["listingId"]
+                    ?: throw BadRequestException("Missing listing id")
+                val photoId = call.parameters["photoId"]
+                    ?: throw BadRequestException("Missing photo id")
+
+                val ownerId = ownerRepo.getOwnerId(listingId)
+                    ?: throw NotFoundException("Listing not found")
+                if (ownerId != userId) throw ForbiddenException("You don't own this listing")
+
+                val photoUrl = ownerRepo.getPhotoUrlForListing(photoId, listingId)
+                    ?: throw NotFoundException("Photo not found")
+
+                // Best-effort file delete. Missing file = log + continue.
+                val filename = photoUrl.substringAfterLast('/')
+                val file = File("uploads", filename)
+                if (file.exists()) {
+                    if (!file.delete()) {
+                        call.application.log.warn(
+                            "Failed to delete photo file: ${file.absolutePath}"
+                        )
+                    }
+                } else {
+                    call.application.log.info(
+                        "Photo file already missing on disk: ${file.absolutePath}"
+                    )
+                }
+
+                ownerRepo.deletePhoto(photoId)
+                call.respond(HttpStatusCode.OK, ApiResponse(data = mapOf("deleted" to photoId)))
+            }
         }
     }
+}
+
+private const val MAX_PHOTOS_PER_LISTING = 6
+private const val MAX_PHOTO_BYTES = 5L * 1024 * 1024
+private val ALLOWED_EXTENSIONS = setOf("jpg", "jpeg", "png", "webp")
+
+/**
+ * Reads exactly one file part from the multipart body, validates it, and writes
+ * it to `uploads/<uuid>.<ext>`. Returns the saved [File].
+ *
+ * Validation:
+ *  - content-type must start with image/
+ *  - extension must be jpg/jpeg/png/webp
+ *  - stream is bounded at 5 MB; oversize uploads are deleted mid-write and 400'd
+ */
+private suspend fun receiveImageToDisk(call: ApplicationCall): File {
+    val multipart = call.receiveMultipart()
+    var saved: File? = null
+
+    multipart.forEachPart { part ->
+        try {
+            if (part is PartData.FileItem && saved == null) {
+                val contentType = part.contentType?.toString().orEmpty()
+                if (!contentType.startsWith("image/")) {
+                    throw BadRequestException("File must be an image (content-type was '$contentType')")
+                }
+                val originalName = part.originalFileName ?: "upload"
+                val ext = originalName.substringAfterLast('.', "").lowercase()
+                if (ext !in ALLOWED_EXTENSIONS) {
+                    throw BadRequestException(
+                        "Allowed extensions: ${ALLOWED_EXTENSIONS.joinToString()}"
+                    )
+                }
+                val target = File("uploads", "${UUID.randomUUID()}.$ext")
+                target.parentFile?.mkdirs()
+
+                part.provider().toInputStream().use { input ->
+                    target.outputStream().use { output ->
+                        val buf = ByteArray(8192)
+                        var total = 0L
+                        while (true) {
+                            val n = input.read(buf)
+                            if (n <= 0) break
+                            total += n
+                            if (total > MAX_PHOTO_BYTES) {
+                                output.close()
+                                target.delete()
+                                throw BadRequestException("Max file size is 5 MB")
+                            }
+                            output.write(buf, 0, n)
+                        }
+                    }
+                }
+                saved = target
+            }
+        } finally {
+            part.release()
+        }
+    }
+
+    return saved ?: throw BadRequestException("No file uploaded")
 }
 
 /**
