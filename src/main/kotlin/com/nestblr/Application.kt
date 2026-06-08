@@ -17,9 +17,11 @@ fun main(args: Array<String>) {
 fun Application.module() {
     FirebaseConfig.init()           // must come before authentication
     DatabaseFactory.init(environment.config)
-    File("uploads").mkdirs()        // photo storage dir, served at /uploads/*
+    val uploadsDir = File(System.getProperty("user.dir"), "uploads").absoluteFile
+    uploadsDir.mkdirs()
+    log.info("Uploads dir: ${uploadsDir.absolutePath}")
     configureSerialization()
     configureStatusPages()
     configureAuthentication()
-    configureRouting()
+    configureRouting(uploadsDir)
 }

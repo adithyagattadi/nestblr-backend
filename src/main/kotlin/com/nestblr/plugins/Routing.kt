@@ -11,14 +11,14 @@ import io.ktor.server.http.content.staticFiles
 import io.ktor.server.routing.*
 import java.io.File
 
-fun Application.configureRouting() {
+fun Application.configureRouting(uploadsDir: File) {
     val listingRepository = ListingRepository()
     val userRepository = UserRepository()
     val ownerListingRepository = OwnerListingRepository()
 
     routing {
         // Public — serve uploaded photos from disk. No auth required.
-        staticFiles("/uploads", File("uploads"))
+        staticFiles("/uploads", uploadsDir)
 
         listingRoutes(listingRepository)
         authRoutes(userRepository)
