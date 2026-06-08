@@ -105,7 +105,14 @@ class OwnerListingRepository {
         }
     }
 
-    /** Updates core listing fields. Caller must verify ownership first. */
+    /**
+     * Updates core listing fields, then replaces room options and amenity links.
+     * Caller must verify ownership first.
+     *
+     * Replace strategy (DELETE-all + INSERT) instead of diffing by id: simpler,
+     * and owners typically have 1-4 room types per listing. The dbQuery wrapper
+     * provides one transaction, so a failure mid-update rolls back atomically.
+     */
     suspend fun updateListing(listingId: String, req: CreateListingRequest) = dbQuery {
         val conn: Connection = TransactionManager.current().connection.connection as Connection
         val sql = """
@@ -132,6 +139,54 @@ class OwnerListingRepository {
             stmt.setString(12, req.foodType)
             stmt.setString(13, listingId)
             stmt.executeUpdate()
+        }
+
+        // Replace rooms: clear existing, insert new
+        conn.prepareStatement("DELETE FROM room_options WHERE listing_id = ?::uuid").use { stmt ->
+            stmt.setString(1, listingId)
+            stmt.executeUpdate()
+        }
+        if (req.roomOptions.isNotEmpty()) {
+            val insertRoom = """
+                INSERT INTO room_options
+                    (listing_id, sharing_type, monthly_rent, security_deposit,
+                     total_beds, available_beds, notice_period_days)
+                VALUES (?::uuid, ?, ?, ?, ?, ?, ?)
+            """.trimIndent()
+            conn.prepareStatement(insertRoom).use { stmt ->
+                for (room in req.roomOptions) {
+                    stmt.setString(1, listingId)
+                    stmt.setString(2, room.sharingType)
+                    stmt.setInt(3, room.monthlyRent)
+                    stmt.setInt(4, room.securityDeposit)
+                    stmt.setInt(5, room.totalBeds)
+                    stmt.setInt(6, room.availableBeds)
+                    stmt.setInt(7, room.noticePeriodDays)
+                    stmt.addBatch()
+                }
+                stmt.executeBatch()
+            }
+        }
+
+        // Replace amenities: clear existing, insert new
+        conn.prepareStatement("DELETE FROM listing_amenities WHERE listing_id = ?::uuid").use { stmt ->
+            stmt.setString(1, listingId)
+            stmt.executeUpdate()
+        }
+        if (req.amenityIds.isNotEmpty()) {
+            val insertAmenity = """
+                INSERT INTO listing_amenities (listing_id, amenity_id)
+                VALUES (?::uuid, ?)
+                ON CONFLICT DO NOTHING
+            """.trimIndent()
+            conn.prepareStatement(insertAmenity).use { stmt ->
+                for (amenityId in req.amenityIds) {
+                    stmt.setString(1, listingId)
+                    stmt.setInt(2, amenityId)
+                    stmt.addBatch()
+                }
+                stmt.executeBatch()
+            }
         }
     }
 
