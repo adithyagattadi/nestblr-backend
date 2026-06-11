@@ -3,6 +3,7 @@ package com.nestblr.routes
 import com.nestblr.models.dto.ApiResponse
 import com.nestblr.models.dto.CreateListingRequest
 import com.nestblr.models.dto.PhotoDto
+import com.nestblr.models.dto.UpdateRoomAvailabilityRequest
 import com.nestblr.plugins.BadRequestException
 import com.nestblr.plugins.FirebasePrincipal
 import com.nestblr.plugins.NotFoundException
@@ -82,6 +83,37 @@ fun Route.ownerRoutes(
 
                 ownerRepo.softDeleteListing(listingId)
                 call.respond(HttpStatusCode.OK, ApiResponse(data = mapOf("deleted" to listingId)))
+            }
+
+            // PATCH /api/v1/owner/listings/{listingId}/rooms/{roomId} — update only
+            // available_beds on one room. Lightweight alternative to the full PUT.
+            patch("/listings/{listingId}/rooms/{roomId}") {
+                val (userId, _) = requireOwner(call, userRepo)
+                val listingId = call.parameters["listingId"]
+                    ?: throw BadRequestException("Missing listing id")
+                val roomId = call.parameters["roomId"]
+                    ?: throw BadRequestException("Missing room id")
+
+                // Ownership first — a non-owner must not learn whether a room exists.
+                val ownerId = ownerRepo.getOwnerId(listingId)
+                    ?: throw NotFoundException("Listing not found")
+                if (ownerId != userId) throw ForbiddenException("You don't own this listing")
+
+                // Existence + room-belongs-to-listing check (null = 404).
+                val room = ownerRepo.getRoomForUpdate(listingId, roomId)
+                    ?: throw NotFoundException("Room not found")
+
+                if (room.listingStatus != "ACTIVE") {
+                    throw BadRequestException("Listing is not active")
+                }
+
+                val body = call.receive<UpdateRoomAvailabilityRequest>()
+                if (body.availableBeds < 0 || body.availableBeds > room.totalBeds) {
+                    throw BadRequestException("availableBeds must be between 0 and totalBeds")
+                }
+
+                val updated = ownerRepo.updateRoomAvailability(roomId, body.availableBeds)
+                call.respond(HttpStatusCode.OK, ApiResponse(data = updated))
             }
 
             // POST /api/v1/owner/listings/{listingId}/photos — upload one photo

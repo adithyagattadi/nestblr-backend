@@ -3,9 +3,21 @@ package com.nestblr.repositories
 import com.nestblr.config.DatabaseFactory.dbQuery
 import com.nestblr.models.dto.CreateListingRequest
 import com.nestblr.models.dto.OwnerListingDto
+import com.nestblr.models.dto.RoomOptionDto
 import org.jetbrains.exposed.v1.jdbc.transactions.TransactionManager
 import java.sql.Connection
 import java.sql.Statement
+
+/**
+ * Minimal projection of a room_options row plus its parent listing's status —
+ * just enough to validate a single-field availability PATCH (bounds check
+ * against [totalBeds], active check against [listingStatus]).
+ */
+data class RoomRow(
+    val id: String,
+    val totalBeds: Int,
+    val listingStatus: String
+)
 
 class OwnerListingRepository {
 
@@ -196,6 +208,68 @@ class OwnerListingRepository {
         conn.prepareStatement("UPDATE listings SET status = 'DELETED', updated_at = NOW() WHERE id = ?::uuid").use { stmt ->
             stmt.setString(1, listingId)
             stmt.executeUpdate()
+        }
+    }
+
+    // ---------- Room availability (single-field PATCH) ----------
+
+    /**
+     * Returns the room iff it belongs to [listingId], joined to its listing's status.
+     * Doubles as an existence + room-belongs-to-listing check (null = 404), mirroring
+     * [getPhotoUrlForListing]. The caller still verifies listing ownership separately
+     * via [getOwnerId]. totalBeds and listingStatus drive the PATCH validation.
+     */
+    suspend fun getRoomForUpdate(listingId: String, roomId: String): RoomRow? = dbQuery {
+        val conn: Connection = TransactionManager.current().connection.connection as Connection
+        val sql = """
+            SELECT r.id, r.total_beds, l.status
+            FROM room_options r
+            JOIN listings l ON l.id = r.listing_id
+            WHERE r.id = ?::uuid AND r.listing_id = ?::uuid
+        """.trimIndent()
+        conn.prepareStatement(sql).use { stmt ->
+            stmt.setString(1, roomId)
+            stmt.setString(2, listingId)
+            stmt.executeQuery().use { rs ->
+                if (rs.next()) {
+                    RoomRow(
+                        id = rs.getString("id"),
+                        totalBeds = rs.getInt("total_beds"),
+                        listingStatus = rs.getString("status")
+                    )
+                } else null
+            }
+        }
+    }
+
+    /**
+     * Sets available_beds on a single room and returns the updated row.
+     * Caller must have validated ownership, the room→listing link, the active
+     * status, and the 0..totalBeds bound before calling.
+     */
+    suspend fun updateRoomAvailability(roomId: String, availableBeds: Int): RoomOptionDto = dbQuery {
+        val conn: Connection = TransactionManager.current().connection.connection as Connection
+        val sql = """
+            UPDATE room_options SET available_beds = ?
+            WHERE id = ?::uuid
+            RETURNING id, sharing_type, monthly_rent, security_deposit,
+                      total_beds, available_beds, notice_period_days
+        """.trimIndent()
+        conn.prepareStatement(sql).use { stmt ->
+            stmt.setInt(1, availableBeds)
+            stmt.setString(2, roomId)
+            stmt.executeQuery().use { rs ->
+                rs.next()
+                RoomOptionDto(
+                    id = rs.getString("id"),
+                    sharingType = rs.getString("sharing_type"),
+                    monthlyRent = rs.getInt("monthly_rent"),
+                    securityDeposit = rs.getInt("security_deposit"),
+                    totalBeds = rs.getInt("total_beds"),
+                    availableBeds = rs.getInt("available_beds"),
+                    noticePeriodDays = rs.getInt("notice_period_days")
+                )
+            }
         }
     }
 
