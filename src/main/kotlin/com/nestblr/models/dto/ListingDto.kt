@@ -17,7 +17,10 @@ data class ListingSummaryDto(
     val reviewCount: Int,
     val minRent: Int?,
     val coverPhotoUrl: String?,
-    val distanceMeters: Double
+    val distanceMeters: Double? = null,
+    // Whether the calling (authenticated) user has favorited this listing.
+    // Defaults false so any non-authenticated deserialization still works.
+    val isFavorite: Boolean = false
 )
 
 @Serializable

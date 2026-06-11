@@ -1,10 +1,12 @@
 package com.nestblr.plugins
 
+import com.nestblr.repositories.FavoritesRepository
 import com.nestblr.repositories.ListingRepository
 import com.nestblr.repositories.OwnerListingRepository
 import com.nestblr.repositories.UserRepository
 import com.nestblr.routes.authRoutes
 import com.nestblr.routes.listingRoutes
+import com.nestblr.routes.meRoutes
 import com.nestblr.routes.ownerRoutes
 import io.ktor.server.application.*
 import io.ktor.server.http.content.staticFiles
@@ -15,13 +17,15 @@ fun Application.configureRouting(uploadsDir: File) {
     val listingRepository = ListingRepository()
     val userRepository = UserRepository()
     val ownerListingRepository = OwnerListingRepository()
+    val favoritesRepository = FavoritesRepository()
 
     routing {
         // Public — serve uploaded photos from disk. No auth required.
         staticFiles("/uploads", uploadsDir)
 
-        listingRoutes(listingRepository)
+        listingRoutes(listingRepository, userRepository)
         authRoutes(userRepository)
         ownerRoutes(userRepository, ownerListingRepository)
+        meRoutes(userRepository, favoritesRepository)
     }
 }

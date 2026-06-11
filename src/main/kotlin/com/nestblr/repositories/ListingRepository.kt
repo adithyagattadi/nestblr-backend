@@ -14,7 +14,7 @@ class ListingRepository {
      * Geo-search using PostGIS ST_DWithin + ST_Distance.
      * Reference: https://postgis.net/docs/ST_DWithin.html
      */
-    suspend fun search(filters: SearchFilters): Pair<List<ListingSummaryDto>, Int> = dbQuery {
+    suspend fun search(userId: String, filters: SearchFilters): Pair<List<ListingSummaryDto>, Int> = dbQuery {
         val radiusMeters = filters.radiusKm * 1000
 
         val filterClauses = mutableListOf<String>()
@@ -40,9 +40,11 @@ class ListingRepository {
                                 ST_X(l.location::geometry) AS lng,
                                 l.gender_preference, l.pg_type, l.food_type,
                                 l.avg_rating, l.review_count,
-                                ST_Distance(l.location, ST_GeogFromText(?)) AS dist
+                                ST_Distance(l.location, ST_GeogFromText(?)) AS dist,
+                                (f.user_id IS NOT NULL) AS is_favorite
                 FROM listings l
                 $rentJoin
+                LEFT JOIN favorites f ON f.listing_id = l.id AND f.user_id = ?::uuid
                 WHERE l.status = 'ACTIVE'
                   AND ST_DWithin(l.location, ST_GeogFromText(?), ?)
                   $extraFilters
@@ -72,11 +74,12 @@ class ListingRepository {
         var total = 0
 
         jdbcConn.prepareStatement(sql).use { stmt ->
-            stmt.setString(1, point)
-            stmt.setString(2, point)
-            stmt.setDouble(3, radiusMeters)
-            stmt.setInt(4, filters.size)
-            stmt.setInt(5, offset)
+            stmt.setString(1, point)       // ST_Distance reference point (SELECT)
+            stmt.setString(2, userId)      // favorites LEFT JOIN user_id
+            stmt.setString(3, point)       // ST_DWithin reference point (WHERE)
+            stmt.setDouble(4, radiusMeters)
+            stmt.setInt(5, filters.size)
+            stmt.setInt(6, offset)
             stmt.executeQuery().use { rs ->
                 while (rs.next()) results.add(rs.toListingSummary())
             }
@@ -105,7 +108,7 @@ class ListingRepository {
      * All queries share the same DB connection inside the transaction, so this
      * is still one logical unit of work.
      */
-    suspend fun findById(id: String): ListingDetailDto? = dbQuery {
+    suspend fun findById(userId: String, id: String): ListingDetailDto? = dbQuery {
         val jdbcConn: Connection = TransactionManager.current().connection.connection as Connection
 
         // 1. Core listing + owner — one JOIN since each listing has exactly one owner
@@ -115,16 +118,19 @@ class ListingRepository {
                    l.gender_preference, l.pg_type, l.food_type,
                    l.avg_rating, l.review_count, l.status,
                    u.id AS owner_id, u.full_name AS owner_name,
-                   COALESCE(l.contact_phone, u.phone) AS owner_phone, u.is_verified AS owner_verified
+                   COALESCE(l.contact_phone, u.phone) AS owner_phone, u.is_verified AS owner_verified,
+                   (fav.user_id IS NOT NULL) AS is_favorite
             FROM listings l
             INNER JOIN users u ON u.id = l.owner_id
+            LEFT JOIN favorites fav ON fav.listing_id = l.id AND fav.user_id = ?::uuid
             WHERE l.id = ?::uuid AND l.status != 'DELETED'
         """.trimIndent()
 
         var detail: ListingDetailDto? = null
 
         jdbcConn.prepareStatement(coreSql).use { stmt ->
-            stmt.setString(1, id)
+            stmt.setString(1, userId)   // favorites LEFT JOIN user_id
+            stmt.setString(2, id)       // listing id (WHERE)
             stmt.executeQuery().use { rs ->
                 if (rs.next()) {
                     val owner = OwnerDto(
@@ -160,7 +166,8 @@ class ListingRepository {
                         roomOptions = rooms,
                         photos = photos,
                         amenities = amenities,
-                        recentReviews = reviews
+                        recentReviews = reviews,
+                        isFavorite = rs.getBoolean("is_favorite")
                     )
                 }
             }
@@ -292,6 +299,7 @@ class ListingRepository {
         reviewCount = getInt("review_count"),
         minRent = (getObject("min_rent") as? Number)?.toInt(),
         coverPhotoUrl = getString("cover_photo"),
-        distanceMeters = getDouble("dist")
+        distanceMeters = getDouble("dist"),
+        isFavorite = getBoolean("is_favorite")
     )
 }

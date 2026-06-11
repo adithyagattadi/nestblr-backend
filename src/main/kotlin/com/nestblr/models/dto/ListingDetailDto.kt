@@ -23,7 +23,9 @@ data class ListingDetailDto(
     val roomOptions: List<RoomOptionDto>,
     val photos: List<PhotoDto>,
     val amenities: List<AmenityDto>,
-    val recentReviews: List<ReviewDto>
+    val recentReviews: List<ReviewDto>,
+    // Whether the calling (authenticated) user has favorited this listing.
+    val isFavorite: Boolean = false
 )
 
 @Serializable
