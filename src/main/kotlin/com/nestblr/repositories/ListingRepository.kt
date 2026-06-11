@@ -254,7 +254,7 @@ class ListingRepository {
 
     private fun fetchRecentReviews(conn: Connection, listingId: String, limit: Int): List<ReviewDto> {
         val sql = """
-            SELECT r.id, u.full_name AS user_name, r.rating, r.comment,
+            SELECT r.id, r.user_id::text AS user_id, u.full_name AS user_name, r.rating, r.comment,
                    r.stayed_from, r.stayed_until, r.created_at
             FROM reviews r
             INNER JOIN users u ON u.id = r.user_id
@@ -270,6 +270,7 @@ class ListingRepository {
                 while (rs.next()) {
                     out.add(ReviewDto(
                         id = rs.getString("id"),
+                        userId = rs.getString("user_id"),
                         userName = rs.getString("user_name"),
                         rating = rs.getInt("rating"),
                         comment = rs.getString("comment"),
