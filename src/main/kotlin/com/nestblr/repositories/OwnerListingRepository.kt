@@ -3,6 +3,7 @@ package com.nestblr.repositories
 import com.nestblr.config.DatabaseFactory.dbQuery
 import com.nestblr.models.dto.CreateListingRequest
 import com.nestblr.models.dto.OwnerListingDto
+import com.nestblr.models.dto.PhotoDto
 import com.nestblr.models.dto.RoomOptionDto
 import org.jetbrains.exposed.v1.jdbc.transactions.TransactionManager
 import java.sql.Connection
@@ -337,6 +338,97 @@ class OwnerListingRepository {
             stmt.setString(1, photoId)
             stmt.executeUpdate()
         }
+    }
+
+    /**
+     * Current display_order of [photoId] iff it belongs to [listingId], else null.
+     * Combined existence + photo-belongs-to-listing check (null = 404), mirroring
+     * [getPhotoUrlForListing].
+     */
+    suspend fun getPhotoDisplayOrder(listingId: String, photoId: String): Int? = dbQuery {
+        val conn: Connection = TransactionManager.current().connection.connection as Connection
+        conn.prepareStatement(
+            "SELECT display_order FROM listing_photos WHERE id = ?::uuid AND listing_id = ?::uuid"
+        ).use { stmt ->
+            stmt.setString(1, photoId)
+            stmt.setString(2, listingId)
+            stmt.executeQuery().use { rs -> if (rs.next()) rs.getInt("display_order") else null }
+        }
+    }
+
+    /** Listing status, or null if the listing doesn't exist. */
+    suspend fun getListingStatus(listingId: String): String? = dbQuery {
+        val conn: Connection = TransactionManager.current().connection.connection as Connection
+        conn.prepareStatement("SELECT status FROM listings WHERE id = ?::uuid").use { stmt ->
+            stmt.setString(1, listingId)
+            stmt.executeQuery().use { rs -> if (rs.next()) rs.getString("status") else null }
+        }
+    }
+
+    /**
+     * Makes [photoId] the cover (display_order = 0), shifting every photo that was
+     * ahead of it up by one so relative order is preserved and no two photos collide.
+     * No-op if it's already the cover. Returns the listing's photos in the new order.
+     *
+     * The whole read-shift-set runs in one transaction (dbQuery). The shift MUST
+     * happen before setting the chosen photo to 0 — bumping [0, oldOrder) up first
+     * frees slot 0 for the chosen photo without ever duplicating a display_order.
+     */
+    suspend fun setCoverPhoto(listingId: String, photoId: String): List<PhotoDto> = dbQuery {
+        val conn: Connection = TransactionManager.current().connection.connection as Connection
+
+        val oldOrder = conn.prepareStatement(
+            "SELECT display_order FROM listing_photos WHERE id = ?::uuid AND listing_id = ?::uuid"
+        ).use { stmt ->
+            stmt.setString(1, photoId)
+            stmt.setString(2, listingId)
+            stmt.executeQuery().use { rs -> if (rs.next()) rs.getInt("display_order") else null }
+        }
+
+        if (oldOrder != null && oldOrder != 0) {
+            // Shift photos ahead of the chosen one up by 1 (frees slot 0).
+            conn.prepareStatement(
+                "UPDATE listing_photos SET display_order = display_order + 1 " +
+                    "WHERE listing_id = ?::uuid AND display_order < ? AND display_order >= 0"
+            ).use { stmt ->
+                stmt.setString(1, listingId)
+                stmt.setInt(2, oldOrder)
+                stmt.executeUpdate()
+            }
+            // Promote the chosen photo to the cover slot.
+            conn.prepareStatement(
+                "UPDATE listing_photos SET display_order = 0 WHERE id = ?::uuid"
+            ).use { stmt ->
+                stmt.setString(1, photoId)
+                stmt.executeUpdate()
+            }
+        }
+
+        fetchPhotosOrdered(conn, listingId)
+    }
+
+    /** Listing's photos as [PhotoDto], ordered by display_order ASC (cover first). */
+    private fun fetchPhotosOrdered(conn: Connection, listingId: String): List<PhotoDto> {
+        val out = mutableListOf<PhotoDto>()
+        conn.prepareStatement(
+            "SELECT id, url, thumbnail_url, display_order FROM listing_photos " +
+                "WHERE listing_id = ?::uuid ORDER BY display_order ASC"
+        ).use { stmt ->
+            stmt.setString(1, listingId)
+            stmt.executeQuery().use { rs ->
+                while (rs.next()) {
+                    out.add(
+                        PhotoDto(
+                            id = rs.getString("id"),
+                            url = rs.getString("url"),
+                            thumbnailUrl = rs.getString("thumbnail_url"),
+                            displayOrder = rs.getInt("display_order")
+                        )
+                    )
+                }
+            }
+        }
+        return out
     }
 
     /** Lists all non-deleted listings owned by [ownerId]. */

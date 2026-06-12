@@ -187,6 +187,34 @@ fun Route.ownerRoutes(
                 ownerRepo.deletePhoto(photoId)
                 call.respond(HttpStatusCode.OK, ApiResponse(data = mapOf("deleted" to photoId)))
             }
+
+            // POST /api/v1/owner/listings/{listingId}/photos/{photoId}/cover
+            // Make this photo the cover (display_order = 0). Cover is derived from
+            // display_order ASC, so this just reorders — no is_cover flag.
+            post("/listings/{listingId}/photos/{photoId}/cover") {
+                val (userId, _) = requireOwner(call, userRepo)
+                val listingId = call.parameters["listingId"]
+                    ?: throw BadRequestException("Missing listing id")
+                val photoId = call.parameters["photoId"]
+                    ?: throw BadRequestException("Missing photo id")
+
+                // Ownership first — a non-owner must not learn whether a photo exists.
+                val ownerId = ownerRepo.getOwnerId(listingId)
+                    ?: throw NotFoundException("Listing not found")
+                if (ownerId != userId) throw ForbiddenException("You don't own this listing")
+
+                // Photo must belong to the listing (null = 404).
+                ownerRepo.getPhotoDisplayOrder(listingId, photoId)
+                    ?: throw NotFoundException("Photo not found")
+
+                if (ownerRepo.getListingStatus(listingId) != "ACTIVE") {
+                    throw BadRequestException("Listing is not active")
+                }
+
+                // Atomic shift + set; idempotent no-op if already the cover.
+                val photos = ownerRepo.setCoverPhoto(listingId, photoId)
+                call.respond(HttpStatusCode.OK, ApiResponse(data = photos))
+            }
         }
     }
 }
