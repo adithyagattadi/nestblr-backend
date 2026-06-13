@@ -26,7 +26,7 @@ fun Route.reviewRoutes(
 
             // POST /api/v1/listings/{listingId}/reviews — submit or edit my review (upsert).
             post {
-                val (userId, _) = requireTenant(call, userRepo)
+                val (userId, _) = requireTenant(call, userRepo, message = "Only tenants can submit reviews")
                 val listingId = requireListingId(call)
 
                 // Existence vs active: null status -> 404, non-ACTIVE -> 400.
@@ -53,7 +53,7 @@ fun Route.reviewRoutes(
             // DELETE /api/v1/listings/{listingId}/reviews/me — retract my review (idempotent).
             // No review -> still 200 with { "deleted": null }.
             delete("/me") {
-                val (userId, _) = requireTenant(call, userRepo)
+                val (userId, _) = requireTenant(call, userRepo, message = "Only tenants can submit reviews")
                 val listingId = requireListingId(call)
 
                 val deleted = reviewsRepo.deleteByUser(userId, listingId)
@@ -79,10 +79,14 @@ private fun requireListingId(call: ApplicationCall): String {
  * Resolves the authenticated Firebase user and enforces role = TENANT.
  * Mirrors requireOwner (OwnerRoutes.kt) — same principal -> user-row -> role-check
  * shape, same ForbiddenException -> 403 mapping. Returns (internalUserId, email).
+ *
+ * [message] is the 403 body used when the user isn't a tenant; callers pass an
+ * action-specific message (e.g. "Only tenants can submit reviews").
  */
-private suspend fun requireTenant(
+internal suspend fun requireTenant(
     call: ApplicationCall,
-    userRepo: UserRepository
+    userRepo: UserRepository,
+    message: String = "This action requires a tenant account"
 ): Pair<String, String?> {
     val principal = call.principal<FirebasePrincipal>()
         ?: throw BadRequestException("No authenticated user")
@@ -91,7 +95,7 @@ private suspend fun requireTenant(
         ?: throw ForbiddenException("User not registered. Call /auth/register first.")
 
     if (user.role != "TENANT") {
-        throw ForbiddenException("Only tenants can submit reviews")
+        throw ForbiddenException(message)
     }
     return user.id to user.email
 }

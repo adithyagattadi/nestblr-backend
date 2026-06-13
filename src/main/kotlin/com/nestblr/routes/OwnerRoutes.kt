@@ -284,7 +284,7 @@ private suspend fun receiveImageToDisk(call: ApplicationCall): File {
  * Resolves the authenticated Firebase user to our internal user row,
  * and enforces that they are an OWNER. Returns (internalUserId, email).
  */
-private suspend fun requireOwner(
+internal suspend fun requireOwner(
     call: ApplicationCall,
     userRepo: UserRepository
 ): Pair<String, String?> {
