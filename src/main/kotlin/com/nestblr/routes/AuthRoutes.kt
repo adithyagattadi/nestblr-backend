@@ -30,12 +30,34 @@ fun Route.authRoutes(userRepo: UserRepository) {
                     throw BadRequestException("role must be TENANT or OWNER")
                 }
 
+                body.gender?.let {
+                    if (it !in listOf("MALE", "FEMALE", "OTHER", "PREFER_NOT_TO_SAY")) {
+                        throw BadRequestException("gender must be MALE, FEMALE, OTHER, or PREFER_NOT_TO_SAY")
+                    }
+                }
+                body.dob?.let {
+                    // ISO date format check — let Postgres do the rigorous parse, but reject obvious garbage early
+                    if (!it.matches(Regex("^\\d{4}-\\d{2}-\\d{2}$"))) {
+                        throw BadRequestException("dob must be ISO date format (YYYY-MM-DD)")
+                    }
+                    // 18+ check at backend too (defense in depth — Android does this client-side)
+                    val parsedDob = try {
+                        java.time.LocalDate.parse(it)
+                    } catch (e: Exception) {
+                        throw BadRequestException("dob is not a valid date")
+                    }
+                    val age = java.time.Period.between(parsedDob, java.time.LocalDate.now()).years
+                    if (age < 18) throw BadRequestException("Users must be 18 or older")
+                }
+
                 val user = userRepo.createOrGet(
                     firebaseUid = principal.uid,
                     email = principal.email,
                     role = role,
                     fullName = body.fullName,
-                    phone = body.phone
+                    phone = body.phone,
+                    gender = body.gender,    // NEW
+                    dob = body.dob           // NEW
                 )
                 call.respond(HttpStatusCode.OK, ApiResponse(data = user))
             }
