@@ -1,88 +1,71 @@
 # NestBLR Backend
 
-Ktor backend for the NestBLR PG/coliving marketplace.
+NestBLR is a two-sided PG/coliving marketplace for Bengaluru. Tenants search for paying-guest
+accommodation directly from owners — no brokers, no fake listings — while PG owners list their
+properties, manage photos and room availability, and see who's inquiring. This repo is the backend:
+a Ktor API over a PostGIS-enabled Postgres database, with Firebase used to authenticate both sides.
+The Android client lives in a separate repo (linked below).
 
 ## Stack
 
-- **Ktor 3.5.0** (latest stable, May 2026)
-- **Exposed 1.0** (Kotlin ORM, stable since Jan 2026)
-- **PostgreSQL 16 + PostGIS 3.4** for spatial queries
-- **HikariCP** connection pooling
-- **Kotlin 2.1 / JVM 17**
+- Ktor 3.5.0 — HTTP server and routing
+- PostgreSQL 16 + PostGIS 3.4 — relational store with spatial queries (`ST_DWithin`)
+- Exposed 1.0 — Kotlin SQL framework, JDBC flavor (`org.jetbrains.exposed.v1.jdbc.*`)
+- HikariCP — JDBC connection pooling
+- Firebase Admin SDK 9.9.0 — verifies tenant/owner ID tokens
+- Docker — runs Postgres + PostGIS locally
+- JDK 21
 
-## Day 1-2 deliverables (current)
+## API surface
 
-- [x] Project scaffold
-- [x] Docker Compose with PostGIS
-- [x] Schema + seed data (30 PGs across Bengaluru)
-- [x] First endpoint: `GET /api/v1/listings/search`
-- [x] PostGIS geo-search with `ST_DWithin` (uses GIST index)
+| Access | Endpoints |
+| --- | --- |
+| Public | `GET /api/v1/listings/health` |
+| Tenant (authed) | `/listings/search`, `/listings/{id}`, `/me/favorites/*`, `/listings/{id}/reviews`, `/listings/{id}/inquiries` |
+| Owner (authed) | `/owner/listings/*` (CRUD), `/owner/listings/{id}/photos/*`, `/owner/listings/{id}/rooms/{roomId}` (availability), `/owner/inquiries/summary` |
+| Static files | `/uploads/<filename>` |
 
-## How to run
+All non-public routes expect a Firebase ID token in the `Authorization: Bearer <token>` header.
 
-### Prereqs
-- Docker Desktop installed
-- JDK 17+
-- Gradle (or use the wrapper once generated)
-
-### Steps
+## Running locally
 
 ```bash
-# 1. Start Postgres + PostGIS + seed data
-docker compose up -d
-
-# 2. Verify DB is up (should print "accepting connections")
-docker exec nestblr-postgres pg_isready -U nestblr
-
-# 3. Run the Ktor server
-./gradlew run
-# (first time: gradle wrapper --gradle-version 8.10 to generate wrapper)
-
-# 4. Test the endpoint — Koramangala center, 3km radius
-curl "http://localhost:8080/api/v1/listings/search?lat=12.9352&lng=77.6245&radius_km=3"
-
-# Filter examples:
-curl "http://localhost:8080/api/v1/listings/search?lat=12.9352&lng=77.6245&radius_km=5&gender=FEMALE"
-curl "http://localhost:8080/api/v1/listings/search?lat=12.9352&lng=77.6245&radius_km=5&max_rent=10000"
-curl "http://localhost:8080/api/v1/listings/search?lat=12.9352&lng=77.6245&radius_km=10&pg_type=COLIVING"
+cd ~/Desktop/nestblr-backend
+docker compose up -d     # Postgres + PostGIS; data persists in a Docker volume
+./gradlew run            # starts Ktor on :8080
 ```
 
-## Project structure
+`firebase-service-account.json` must be placed at the backend root before running. It is gitignored
+and not included here — supply your own from the Firebase console.
 
-```
-nestblr-backend/
-├── build.gradle.kts
-├── docker-compose.yml
-├── db/init/                       # Auto-runs on first DB start
-│   ├── 01_schema.sql              # Tables, indexes, PostGIS extension
-│   └── 02_seed.sql                # 30 fake PGs across Bengaluru
-└── src/main/kotlin/com/nestblr/
-    ├── Application.kt             # Entrypoint
-    ├── config/
-    │   └── DatabaseFactory.kt     # HikariCP + Exposed init
-    ├── plugins/
-    │   ├── Routing.kt
-    │   ├── Serialization.kt
-    │   └── StatusPages.kt         # Global error handler
-    ├── routes/
-    │   └── ListingRoutes.kt       # GET /api/v1/listings/search
-    ├── repositories/
-    │   └── ListingRepository.kt   # PostGIS spatial query
-    └── models/dto/
-        └── ListingDto.kt
+Health check once the server is up:
+
+```bash
+curl http://localhost:8080/api/v1/listings/health
 ```
 
-## Reference links
+The database lives in a Docker volume, so it survives `docker compose down` (use `-v` to wipe it).
 
-- Ktor 3.5 release notes: https://ktor.io/docs/whats-new-350.html
-- Exposed 1.0 announcement: https://blog.jetbrains.com/kotlin/2026/01/exposed-1-0-is-now-available/
-- PostGIS `ST_DWithin`: https://postgis.net/docs/ST_DWithin.html
-- PostGIS Docker image: https://registry.hub.docker.com/r/postgis/postgis
-- Ktor project generator: https://start.ktor.io/
+## Schema overview
 
-## Next steps (Week 1 continued)
+Defined in `db/init/01_schema.sql`:
 
-- [ ] `GET /api/v1/listings/{id}` — full listing detail with photos, rooms, amenities
-- [ ] Performance test: load 5000 listings, measure search latency
-- [ ] Add CORS plugin (Android emulator won't need it, but a web admin will)
-- [ ] Auth: Firebase Admin SDK token verification
+- `listings` — core PG/coliving listing (location, rent, gender, food, PG type)
+- `room_options` — per-listing room types with availability counts
+- `listing_amenities` — amenity flags per listing
+- `listing_photos` — uploaded photos, ordered, with a cover flag
+- `users` — tenant and owner records keyed by Firebase UID
+- `reviews` — tenant reviews (star rating + comment) with aggregate recompute
+- `favorites` — tenant-to-listing saves
+- `inquiries` — logged "call owner" events from tenants
+
+## What's not included
+
+- No deployment configs — no Dockerfile for the app, no CI, no infra-as-code. Runs on a laptop.
+- No tests.
+- Rate-limiting is configured as a plugin but not actually applied to any route.
+- Photo storage is on the local filesystem under `uploads/` — no S3/R2/CDN.
+
+## Related repo
+
+Android client: `<github-username>/NestBLR` (replace with the real URL).
