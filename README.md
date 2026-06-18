@@ -68,4 +68,4 @@ Defined in `db/init/01_schema.sql`:
 
 ## Related repo
 
-Android client: `<github-username>/NestBLR` (replace with the real URL).
+Android client: `adithyagattadi/nestblr` (replace with the real URL).
