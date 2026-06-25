@@ -13,7 +13,6 @@ import java.io.File
 fun main(args: Array<String>) {
     EngineMain.main(args)
 }
-
 fun Application.module() {
     FirebaseConfig.init()           // must come before authentication
     DatabaseFactory.init(environment.config)
