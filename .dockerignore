@@ -1,0 +1,27 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# IDE
+.idea
+.vscode
+*.iml
+.DS_Store
+
+# Gradle build outputs (rebuilt in container)
+.gradle
+build
+
+# Local data — must not leak to the image
+uploads
+firebase-service-account.json
+
+# Local scripts and docs
+README.md
+KNOWN_LIMITATIONS.md
+db/init
+
+# CI / meta
+Dockerfile
+.dockerignore
