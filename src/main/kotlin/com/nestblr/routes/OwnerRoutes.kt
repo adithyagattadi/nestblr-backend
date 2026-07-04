@@ -3,6 +3,7 @@ package com.nestblr.routes
 import com.nestblr.models.dto.ApiResponse
 import com.nestblr.models.dto.CreateListingRequest
 import com.nestblr.models.dto.PhotoDto
+import com.nestblr.config.PhotoStorage
 import com.nestblr.models.dto.UpdateRoomAvailabilityRequest
 import com.nestblr.plugins.BadRequestException
 import com.nestblr.plugins.FirebasePrincipal
@@ -17,7 +18,6 @@ import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import io.ktor.utils.io.jvm.javaio.toInputStream
-import java.io.File
 import java.util.UUID
 
 /**
@@ -34,7 +34,8 @@ class ForbiddenException(message: String) : RuntimeException(message)
 
 fun Route.ownerRoutes(
     userRepo: UserRepository,
-    ownerRepo: OwnerListingRepository
+    ownerRepo: OwnerListingRepository,
+    photoStorage: PhotoStorage
 ) {
     route("/api/v1/owner") {
         authenticate("firebase") {
@@ -133,8 +134,7 @@ fun Route.ownerRoutes(
                     )
                 }
 
-                val saved = receiveImageToDisk(call)
-                val url = "/uploads/${saved.name}"
+                val url = receiveImage(call, photoStorage)
                 val photoId = ownerRepo.insertPhoto(
                     listingId = listingId,
                     url = url,
@@ -169,20 +169,9 @@ fun Route.ownerRoutes(
                 val photoUrl = ownerRepo.getPhotoUrlForListing(photoId, listingId)
                     ?: throw NotFoundException("Photo not found")
 
-                // Best-effort file delete. Missing file = log + continue.
-                val filename = photoUrl.substringAfterLast('/')
-                val file = File("uploads", filename)
-                if (file.exists()) {
-                    if (!file.delete()) {
-                        call.application.log.warn(
-                            "Failed to delete photo file: ${file.absolutePath}"
-                        )
-                    }
-                } else {
-                    call.application.log.info(
-                        "Photo file already missing on disk: ${file.absolutePath}"
-                    )
-                }
+                // Best-effort object delete. The storage impl handles URL parsing
+                // and missing-object logging internally.
+                photoStorage.delete(photoUrl)
 
                 ownerRepo.deletePhoto(photoId)
                 call.respond(HttpStatusCode.OK, ApiResponse(data = mapOf("deleted" to photoId)))
@@ -224,21 +213,23 @@ private const val MAX_PHOTO_BYTES = 5L * 1024 * 1024
 private val ALLOWED_EXTENSIONS = setOf("jpg", "jpeg", "png", "webp")
 
 /**
- * Reads exactly one file part from the multipart body, validates it, and writes
- * it to `uploads/<uuid>.<ext>`. Returns the saved [File].
+ * Reads exactly one file part from the multipart body, validates it, and hands
+ * it to [PhotoStorage]. Returns the URL the storage impl assigned (relative for
+ * local disk, absolute for Supabase).
  *
  * Validation:
  *  - content-type must start with image/
  *  - extension must be jpg/jpeg/png/webp
- *  - stream is bounded at 5 MB; oversize uploads are deleted mid-write and 400'd
+ *  - bytes are buffered in memory bounded at 5 MB; oversize uploads are 400'd
+ *    BEFORE any storage write, so we never half-upload a giant file to the cloud
  */
-private suspend fun receiveImageToDisk(call: ApplicationCall): File {
+private suspend fun receiveImage(call: ApplicationCall, storage: PhotoStorage): String {
     val multipart = call.receiveMultipart()
-    var saved: File? = null
+    var url: String? = null
 
     multipart.forEachPart { part ->
         try {
-            if (part is PartData.FileItem && saved == null) {
+            if (part is PartData.FileItem && url == null) {
                 val contentType = part.contentType?.toString().orEmpty()
                 if (!contentType.startsWith("image/")) {
                     throw BadRequestException("File must be an image (content-type was '$contentType')")
@@ -250,34 +241,33 @@ private suspend fun receiveImageToDisk(call: ApplicationCall): File {
                         "Allowed extensions: ${ALLOWED_EXTENSIONS.joinToString()}"
                     )
                 }
-                val target = File("uploads", "${UUID.randomUUID()}.$ext")
-                target.parentFile?.mkdirs()
+                val filename = "${UUID.randomUUID()}.$ext"
 
-                part.provider().toInputStream().use { input ->
-                    target.outputStream().use { output ->
-                        val buf = ByteArray(8192)
-                        var total = 0L
-                        while (true) {
-                            val n = input.read(buf)
-                            if (n <= 0) break
-                            total += n
-                            if (total > MAX_PHOTO_BYTES) {
-                                output.close()
-                                target.delete()
-                                throw BadRequestException("Max file size is 5 MB")
-                            }
-                            output.write(buf, 0, n)
+                // Read bytes with 5 MB cap, in memory (was streaming to disk before).
+                val bytes = part.provider().toInputStream().use { input ->
+                    val buf = ByteArray(8192)
+                    val out = java.io.ByteArrayOutputStream()
+                    var total = 0L
+                    while (true) {
+                        val n = input.read(buf)
+                        if (n <= 0) break
+                        total += n
+                        if (total > MAX_PHOTO_BYTES) {
+                            throw BadRequestException("Max file size is 5 MB")
                         }
+                        out.write(buf, 0, n)
                     }
+                    out.toByteArray()
                 }
-                saved = target
+
+                url = storage.save(bytes.inputStream(), filename, contentType)
             }
         } finally {
             part.release()
         }
     }
 
-    return saved ?: throw BadRequestException("No file uploaded")
+    return url ?: throw BadRequestException("No file provided")
 }
 
 /**

@@ -62,6 +62,10 @@ dependencies {
 
     // Ktor auth plugin
     implementation("io.ktor:ktor-server-auth:$ktor_version")
+
+    // Ktor client — used by SupabaseStorage to upload/delete objects over HTTP
+    implementation("io.ktor:ktor-client-core:$ktor_version")
+    implementation("io.ktor:ktor-client-cio:$ktor_version")
 }
 
 kotlin {
