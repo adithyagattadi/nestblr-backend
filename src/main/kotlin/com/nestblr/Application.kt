@@ -9,11 +9,16 @@ import com.nestblr.plugins.configureSerialization
 import com.nestblr.plugins.configureStatusPages
 import io.ktor.server.application.*
 import io.ktor.server.netty.EngineMain
+import io.ktor.server.request.*
 
 fun main(args: Array<String>) {
     EngineMain.main(args)
 }
 fun Application.module() {
+    install(io.ktor.server.plugins.calllogging.CallLogging) {
+        level = org.slf4j.event.Level.INFO
+        filter { call -> call.request.path().startsWith("/api/") }
+    }
     FirebaseConfig.init()           // must come before authentication
     DatabaseFactory.init(environment.config)
     val photoStorage = PhotoStorageFactory.create()
