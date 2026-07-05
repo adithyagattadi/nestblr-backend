@@ -8,3 +8,5 @@ local.properties
 out/
 firebase-service-account.json
 uploads/
+.env.*
+.env
